@@ -5,8 +5,36 @@ cho script Node — **zero dependency**.
 
 Cài một lần bằng `npx`, dùng được ở **mọi repo**.
 
-> Trạng thái: đang phát triển. Phase 0 (lõi API) và Phase 1 (đọc OOXML) đã xong và có test;
-> CLI + wizard cài đặt (Phase 2) chưa có.
+```bash
+npx -y github:dangchison/gdrive-cli
+```
+
+Wizard sẽ hỏi credential (dán JSON key, hoặc hướng dẫn bạn tạo, hoặc dùng `gcloud` login sẵn
+có), ghi vào `~/.claude/gdrive.json` chmod 600, copy CLI vào `~/.claude/gdrive/`, và cài một
+skill toàn cục để Claude Code tự biết dùng.
+
+**Private key không bao giờ đi qua context của Claude** — bạn dán thẳng vào wizard ở terminal.
+
+Sau khi cài, **mở một session Claude Code mới** (skill chỉ nạp lúc khởi động session).
+
+## Lệnh
+
+```bash
+gdrive read  <url> [--sheet <tên|gid>] [--range A1:E50] [--json]   # Sheets & .xlsx
+gdrive doc   <url> [--format markdown|text] [--notes]              # Docs/Slides/.docx/.pptx
+gdrive info  <url>                                                 # file này là gì
+gdrive ls    [<url-thư-mục>] [--name-contains …]
+gdrive get   <url> --out <path>
+gdrive put   <file> --folder <url> [--share none|anyone-reader]
+gdrive write <url> --set L5=PASSED --set L6=FAILED
+gdrive status | uninstall [--purge]
+```
+
+Mọi lệnh nhận **thẳng URL dán vào** — tự bóc file id và gid. `read` luôn in kèm danh sách
+tất cả các tab, nên đoán nhầm tab thì gọi lại được ngay, không cần lệnh phụ để dò.
+
+Mặc định cài ở chế độ **readonly**: `write` và `put` bị từ chối ngay tại chỗ, và token cũng
+chỉ được cấp scope `.readonly`. Bật ghi bằng `--mode readwrite`.
 
 ## Vì sao zero dependency
 
@@ -83,8 +111,9 @@ await sheets.spreadsheets.values.get({ spreadsheetId, range: "'Tab'!A1:C3" }); /
 node --test
 ```
 
-115 test, không cần mạng và không cần credential: chữ ký JWT được verify bằng keypair sinh
-tại chỗ, fixture ZIP/OOXML dựng in-memory bằng `zlib.deflateRawSync`.
+150 test, không cần mạng và không cần credential: chữ ký JWT được verify bằng keypair sinh
+tại chỗ, fixture ZIP/OOXML dựng in-memory bằng `zlib.deflateRawSync`, và cả luồng
+init/uninstall chạy trên một HOME tạm.
 
 Ngoài ra bộ đọc `.xlsx` đã được đối chiếu với `python3` + `openpyxl` trên 6 file thật tải từ
 Drive: **3859 ô, 0 lệch**.
