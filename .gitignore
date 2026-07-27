@@ -1,0 +1,9 @@
+node_modules/
+*.log
+.DS_Store
+
+# TUYỆT ĐỐI không commit credential thật.
+*.json.key
+service-account*.json
+gdrive.json
+.env

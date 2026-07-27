@@ -1,0 +1,42 @@
+{
+  "name": "gdrive-cli",
+  "version": "0.1.0",
+  "description": "Truy cập Google Sheets/Docs/Slides/Drive bằng service account — CLI + skill cho Claude Code, zero dependency",
+  "type": "module",
+  "bin": {
+    "gdrive": "bin/cli.mjs"
+  },
+  "exports": {
+    ".": "./src/index.mjs",
+    "./sheets-compat": "./src/sheets-compat.mjs"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "skill/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "keywords": [
+    "claude-code",
+    "google-drive",
+    "google-sheets",
+    "service-account",
+    "xlsx",
+    "docx",
+    "pptx",
+    "zero-dependency"
+  ],
+  "author": "dangchison",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dangchison/gdrive-cli.git"
+  }
+}
