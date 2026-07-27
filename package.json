@@ -1,6 +1,6 @@
 {
   "name": "gdrive-cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Truy cập Google Sheets/Docs/Slides/Drive bằng service account — CLI + skill cho Claude Code, zero dependency",
   "type": "module",
   "bin": {
