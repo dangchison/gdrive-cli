@@ -51,8 +51,8 @@ export function signJwt({ clientEmail, privateKey, scopes, subject = null, nowSe
   } catch (err) {
     throw new Error(
       `Không ký được JWT — private key hỏng hoặc sai định dạng PEM (${err.message}).\n` +
-        'Kiểm tra private_key có đủ dòng -----BEGIN PRIVATE KEY----- / -----END PRIVATE KEY----- ' +
-        'và các "\\n" đã được mở thành xuống dòng thật chưa.',
+        'Kiểm tra private_key có đủ hai dòng BEGIN/END PRIVATE KEY, và các "\\n" đã được ' +
+        'mở thành xuống dòng thật chưa.',
     );
   }
   return `${signingInput}.${signature.toString('base64url')}`;

@@ -1,0 +1,25 @@
+# Allowlist cho gitleaks.
+#
+# Repo này KHÔNG chứa credential thật. Hai chỗ bị bắt là fixture tổng hợp trong test —
+# thân key chỉ là "MIIabc" / "CỤT", cố tình vô nghĩa. Khoá theo đường dẫn + regex hẹp thay
+# vì tắt rule, để key thật lọt vào vẫn bị bắt.
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "private-key"
+description = "Private Key"
+regex = '''(?i)-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY( BLOCK)?-----'''
+keywords = ["-----BEGIN"]
+
+  [rules.allowlist]
+  # Khớp theo cả DÒNG chứ không theo đường dẫn: chỉ tha đúng những ngữ cảnh đã xác minh,
+  # nên một key thật lọt vào chính các file đó vẫn bị bắt.
+  regexTarget = "line"
+  regexes = [
+    '''MIIabc''',                    # thân key giả — test/credentials.test.mjs
+    '''CỤT''',                       # ca "key bị cắt" — test/install.test.mjs
+    '''private_key có đủ dòng''',    # câu hướng dẫn lỗi trong src/auth.mjs (commit 1c24a2d)
+    '''assert\.match\(out\.privateKey''',  # assertion kiểm tra format — test/install.test.mjs
+  ]
