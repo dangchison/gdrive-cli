@@ -1,6 +1,6 @@
 {
   "name": "gdrive-cli",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Truy cập Google Sheets/Docs/Slides/Drive bằng service account — CLI + skill cho Claude Code, zero dependency",
   "type": "module",
   "bin": {
@@ -13,7 +13,10 @@
   "files": [
     "bin/",
     "src/",
-    "skill/",
+    "server/",
+    "skills/",
+    ".claude-plugin/",
+    ".mcp.json",
     "README.md",
     "LICENSE"
   ],

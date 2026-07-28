@@ -123,15 +123,27 @@ test('GOOGLE_APPLICATION_CREDENTIALS trỏ tới file key', () => {
   });
 });
 
-test('config ~/.claude/gdrive.json khi env trống', () => {
+test('config: đọc được cả vị trí CŨ lẫn thư mục data plugin, báo ĐÚNG nguồn', () => {
   sandbox(({ home, run }) => {
+    // Vị trí cũ (bản cài npx) — người đã cài kiểu cũ không được mất cấu hình.
     writeFileSync(
       join(home, '.claude', 'gdrive.json'),
-      JSON.stringify({ clientEmail: 'cfg@x.com', privateKey: PEM, mode: 'readonly' }),
+      JSON.stringify({ clientEmail: 'cu@x.com', privateKey: PEM, mode: 'readonly' }),
     );
-    const cred = resolveCredentials({ env: {}, home, run });
-    assert.equal(cred.source, '~/.claude/gdrive.json');
-    assert.equal(cred.clientEmail, 'cfg@x.com');
+    let cred = resolveCredentials({ env: {}, home, run });
+    assert.equal(cred.clientEmail, 'cu@x.com');
+    assert.match(cred.source, /gdrive\.json$/);
+
+    // Config plugin THẮNG, và source phải trỏ đúng file đang dùng.
+    const dataDir = join(home, '.claude', 'plugins', 'data', 'gdrive-gdrive-cli');
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(
+      join(dataDir, 'config.json'),
+      JSON.stringify({ clientEmail: 'moi@x.com', privateKey: PEM, mode: 'readonly' }),
+    );
+    cred = resolveCredentials({ env: {}, home, run });
+    assert.equal(cred.clientEmail, 'moi@x.com');
+    assert.match(cred.source, /plugins\/data\/gdrive-gdrive-cli\/config\.json$/);
   });
 });
 
@@ -193,7 +205,7 @@ test('không có gì → lỗi liệt kê đủ cách khắc phục', () => {
   sandbox(({ home, run }) => {
     assert.throws(() => resolveCredentials({ env: {}, home, run }), (err) => {
       assert.ok(err instanceof CredentialError);
-      assert.match(err.message, /gdrive-cli init/);
+      assert.match(err.message, /gdrive-setup/);
       assert.match(err.message, /GOOGLE_SERVICE_ACCOUNT_JSON/);
       assert.match(err.message, /DRIVE_SERVICE_ACCOUNT_EMAIL/);
       assert.match(err.message, /gcloud auth application-default login/);

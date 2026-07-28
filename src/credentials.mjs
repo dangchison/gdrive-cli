@@ -10,7 +10,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-import { readConfig } from './config.mjs';
+import { legacyConfigPath, pluginConfigPath, readConfig } from './config.mjs';
 
 export class CredentialError extends Error {
   constructor(message) {
@@ -171,15 +171,18 @@ export function resolveCredentials({
     );
   }
 
-  // 6. Config do wizard ghi ra. Vắng mặt trong CI — đúng như thiết kế.
-  const cfg = readConfig(home);
+  // 6. Config của plugin (hoặc vị trí cũ). Vắng mặt trong CI — đúng như thiết kế.
+  const cfg = readConfig(home, env);
   if (cfg?.clientEmail && cfg?.privateKey) {
     return {
       type: 'service_account',
       clientEmail: cfg.clientEmail,
       privateKey: normalizeKey(cfg.privateKey),
       projectId: cfg.projectId ?? null,
-      source: '~/.claude/gdrive.json',
+      // Báo ĐÚNG file đang dùng — nhãn cứng từng khiến status nói sai nguồn.
+      source: existsSync(pluginConfigPath(env, home))
+        ? pluginConfigPath(env, home)
+        : legacyConfigPath(home),
     };
   }
 
@@ -204,7 +207,8 @@ export function resolveCredentials({
 
   throw new CredentialError(
     'Không tìm thấy credential Google. Chọn một trong các cách sau:\n' +
-      '  • Chạy wizard:  npx -y github:dangchison/gdrive-cli init\n' +
+      '  • Trong Claude Code: chạy skill /gdrive-setup\n' +
+      '  • Hoặc tay:     gdrive init --sa-json <đường-dẫn-key.json>\n' +
       '  • Đặt env:      GOOGLE_SERVICE_ACCOUNT_JSON=<nội dung file key JSON>\n' +
       '  • Hoặc cặp:     DRIVE_SERVICE_ACCOUNT_EMAIL + DRIVE_PRIVATE_KEY\n' +
       '  • Hoặc file:    GOOGLE_APPLICATION_CREDENTIALS=/đường/dẫn/key.json\n' +

@@ -3,21 +3,38 @@
 Truy cập Google Sheets / Docs / Slides / Drive bằng **service account**, cho Claude Code và
 cho script Node — **zero dependency**.
 
-Cài một lần bằng `npx`, dùng được ở **mọi repo**.
+Cài **một** plugin cho Claude Code — skill, MCP tool và CLI gói chung, dùng được ở **mọi repo**.
 
-```bash
-npx -y github:dangchison/gdrive-cli
+```
+/plugin marketplace add dangchison/gdrive-cli
+/plugin install gdrive@gdrive-cli
 ```
 
-Wizard sẽ hỏi credential (dán JSON key, hoặc hướng dẫn bạn tạo, hoặc dùng `gcloud` login sẵn
-có), ghi vào `~/.claude/gdrive.json` chmod 600, copy CLI vào `~/.claude/gdrive/`, và cài một
-skill toàn cục để Claude Code tự biết dùng.
+Rồi chạy skill `/gdrive-setup` để trỏ tới file JSON key của service account.
+**Private key không bao giờ đi qua cuộc hội thoại** — bạn chỉ đưa đường dẫn, CLI tự đọc.
 
-**Private key không bao giờ đi qua context của Claude** — bạn dán thẳng vào wizard ở terminal.
+Cấu hình nằm trong thư mục data của plugin (`~/.claude/plugins/data/…`, chmod 600), tự xoá khi
+gỡ plugin. **Không đụng `settings.json`, không rải file khắp `~/.claude`.**
 
-Sau khi cài, **mở một session Claude Code mới** (skill chỉ nạp lúc khởi động session).
+## Claude dùng nó thế nào
+
+Sau khi cài, Claude có sẵn các MCP tool — không cần allow-rule, không phụ thuộc skill có kích
+hoạt đúng hay không:
+
+| Tool | Việc |
+|---|---|
+| `gdrive_sheet_read` | Google Sheets **và** `.xlsx` trên Drive; luôn trả kèm danh sách tab |
+| `gdrive_read_document` | Docs, Slides, `.docx`, `.pptx`, `.csv`, `.txt` |
+| `gdrive_file_info` | File này là gì, đọc bằng tool nào |
+| `gdrive_list` · `gdrive_download` | Tìm và tải file |
+| `gdrive_sheet_write` · `gdrive_upload` | Chỉ hiện ở chế độ `readwrite` |
+
+Mặc định là **readonly**: hai tool ghi bị **ẩn hẳn** khỏi danh sách — model không gọi được thứ
+nó không nhìn thấy. Bật ghi: `gdrive init --mode readwrite`.
 
 ## Lệnh
+
+CLI vẫn còn cho việc gọi tay và cho script:
 
 ```bash
 gdrive read  <url> [--sheet <tên|gid>] [--range A1:E50] [--json]   # Sheets & .xlsx
@@ -27,7 +44,8 @@ gdrive ls    [<url-thư-mục>] [--name-contains …]
 gdrive get   <url> --out <path>
 gdrive put   <file> --folder <url> [--share none|anyone-reader]
 gdrive write <url> --set L5=PASSED --set L6=FAILED
-gdrive status | uninstall [--purge]
+gdrive init | status
+gdrive uninstall [--purge]   # dọn bản cài npx CŨ (≤ v0.1)
 ```
 
 Mọi lệnh nhận **thẳng URL dán vào** — tự bóc file id và gid. `read` luôn in kèm danh sách
@@ -73,7 +91,8 @@ Tìm theo thứ tự, dừng ở cái đầu tiên có:
 3. `GOOGLE_SERVICE_ACCOUNT_EMAIL` + `GOOGLE_PRIVATE_KEY`
 4. `DRIVE_SERVICE_ACCOUNT_EMAIL` + `DRIVE_PRIVATE_KEY`
 5. `GOOGLE_APPLICATION_CREDENTIALS` (đường dẫn file key)
-6. `~/.claude/gdrive.json` (do wizard ghi, chmod 600)
+6. Config của plugin — `~/.claude/plugins/data/…/config.json` (chmod 600); rơi về
+   `~/.claude/gdrive.json` nếu bạn từng cài kiểu cũ
 7. ADC của gcloud
 8. `gcloud auth print-access-token`
 
@@ -111,9 +130,10 @@ await sheets.spreadsheets.values.get({ spreadsheetId, range: "'Tab'!A1:C3" }); /
 node --test
 ```
 
-150 test, không cần mạng và không cần credential: chữ ký JWT được verify bằng keypair sinh
+154 test, không cần mạng và không cần credential: chữ ký JWT được verify bằng keypair sinh
 tại chỗ, fixture ZIP/OOXML dựng in-memory bằng `zlib.deflateRawSync`, và cả luồng
-init/uninstall chạy trên một HOME tạm.
+init/uninstall chạy trên một HOME tạm. Riêng MCP server được chạy như tiến trình con thật
+và feed byte-stream JSON-RPC vào — bắt được cả ca stdout bị nhiễm thứ không phải JSON.
 
 Ngoài ra bộ đọc `.xlsx` đã được đối chiếu với `python3` + `openpyxl` trên 6 file thật tải từ
 Drive: **3859 ô, 0 lệch**.

@@ -1,4 +1,4 @@
-// Cài đặt end-to-end trên một HOME tạm — không đụng tới ~/.claude thật.
+// Cấu hình + dọn bản cũ, chạy trên HOME tạm — không đụng ~/.claude thật.
 
 import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
@@ -7,8 +7,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { cliPathFor, runInit, validateServiceAccountJson } from '../src/init.mjs';
-import { permissionRule } from '../src/settings.mjs';
+import { pluginConfigPath, pluginDataDir, readConfig } from '../src/config.mjs';
+import { runInit, validateServiceAccountJson } from '../src/init.mjs';
 import { runUninstall } from '../src/uninstall.mjs';
 
 const { privateKey } = generateKeyPairSync('rsa', {
@@ -24,26 +24,21 @@ const KEY_JSON = JSON.stringify({
   private_key: privateKey.replace(/\n/g, '\\n'),
 });
 
-// PHẢI await fn: nếu để sync thì `finally` xoá thư mục tạm ngay khi promise vừa được trả
-// về, trong lúc test vẫn đang chạy.
+// PHẢI await fn: sync thì `finally` xoá thư mục tạm khi test async còn đang chạy.
 async function sandbox(fn) {
   const home = mkdtempSync(join(tmpdir(), 'gdrive-home-'));
   mkdirSync(join(home, '.claude'), { recursive: true });
   const keyFile = join(home, 'key.json');
   writeFileSync(keyFile, KEY_JSON);
+  // env rỗng → pluginDataDir tự tính từ home, không dính CLAUDE_PLUGIN_DATA của máy thật.
   try {
-    return await fn({ home, keyFile, log: () => {} });
+    return await fn({ home, keyFile, env: {}, log: () => {} });
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
 }
 
-const baseFlags = (keyFile) => ({
-  yes: true,
-  'sa-json': keyFile,
-  mode: 'readonly',
-  'no-test': true,
-});
+const baseFlags = (keyFile) => ({ yes: true, 'sa-json': keyFile, mode: 'readonly', 'no-test': true });
 
 test('validate: JSON hỏng / sai type / thiếu field / key cụt', () => {
   assert.throws(() => validateServiceAccountJson('không phải json'), /JSON hợp lệ/);
@@ -65,111 +60,115 @@ test('validate: key hợp lệ → mở literal \\n thành xuống dòng thật'
   assert.equal(out.projectId, 'proj-test');
 });
 
-test('init: ghi config chmod 600, copy code, cài skill đã thay placeholder', async () => {
-  await sandbox(async ({ home, keyFile, log }) => {
-    assert.equal(await runInit(baseFlags(keyFile), { home, log, env: {} }), true);
+test('pluginDataDir: ưu tiên CLAUDE_PLUGIN_DATA, không có thì tự tính', () => {
+  assert.equal(pluginDataDir({ CLAUDE_PLUGIN_DATA: '/x/y' }, '/home/u'), '/x/y');
+  assert.equal(
+    pluginDataDir({}, '/home/u'),
+    join('/home/u', '.claude', 'plugins', 'data', 'gdrive-gdrive-cli'),
+  );
+});
 
-    const cfgFile = join(home, '.claude', 'gdrive.json');
-    const cfg = JSON.parse(readFileSync(cfgFile, 'utf8'));
+test('init: ghi cấu hình vào thư mục data plugin, chmod 600', async () => {
+  await sandbox(async ({ home, keyFile, env, log }) => {
+    assert.equal(await runInit(baseFlags(keyFile), { home, log, env }), true);
+
+    const file = pluginConfigPath(env, home);
+    assert.ok(existsSync(file), 'phải ghi vào thư mục data của plugin');
+    const cfg = JSON.parse(readFileSync(file, 'utf8'));
     assert.equal(cfg.clientEmail, 'test-sa@proj-test.iam.gserviceaccount.com');
     assert.equal(cfg.mode, 'readonly');
     if (process.platform !== 'win32') {
-      assert.equal(statSync(cfgFile).mode & 0o777, 0o600, 'config chứa private key → phải 600');
+      assert.equal(statSync(file).mode & 0o777, 0o600, 'chứa private key → phải 600');
     }
-
-    const cliPath = cliPathFor(home);
-    assert.ok(existsSync(cliPath), 'phải copy bin/');
-    assert.ok(existsSync(join(home, '.claude', 'gdrive', 'src', 'auth.mjs')), 'phải copy src/');
-
-    const skill = readFileSync(join(home, '.claude', 'skills', 'gdrive', 'SKILL.md'), 'utf8');
-    assert.doesNotMatch(skill, /\{\{CLI\}\}/, 'placeholder phải được thay hết');
-    assert.ok(skill.includes(cliPath), 'skill phải trỏ đúng đường dẫn tuyệt đối');
   });
 });
 
-test('init: KHÔNG tự thêm allow-rule khi chưa được đồng ý', async () => {
-  await sandbox(async ({ home, keyFile, log }) => {
-    await runInit(baseFlags(keyFile), { home, log, env: {} });
-    const settingsFile = join(home, '.claude', 'settings.json');
-    assert.equal(existsSync(settingsFile), false, 'không được đụng settings.json khi không hỏi được');
+test('init: KHÔNG copy code, KHÔNG cài skill, KHÔNG đụng settings.json', async () => {
+  await sandbox(async ({ home, keyFile, env, log }) => {
+    await runInit(baseFlags(keyFile), { home, log, env });
+    assert.equal(existsSync(join(home, '.claude', 'gdrive')), false, 'không copy code nữa');
+    assert.equal(existsSync(join(home, '.claude', 'skills', 'gdrive')), false, 'skill do plugin lo');
+    assert.equal(existsSync(join(home, '.claude', 'settings.json')), false, 'MCP không cần allow-rule');
   });
 });
 
-test('init --allow-bash: thêm rule, giữ rule sẵn có, có sao lưu', async () => {
-  await sandbox(async ({ home, keyFile, log }) => {
-    const settingsFile = join(home, '.claude', 'settings.json');
-    writeFileSync(settingsFile, JSON.stringify({ permissions: { allow: ['Bash(git status)'] } }, null, 2));
-
-    await runInit({ ...baseFlags(keyFile), 'allow-bash': true }, { home, log, env: {} });
-
-    const settings = JSON.parse(readFileSync(settingsFile, 'utf8'));
-    assert.deepEqual(settings.permissions.allow, [
-      'Bash(git status)',
-      permissionRule(cliPathFor(home)),
-    ]);
+test('init: chạy lại thì giữ credential cũ, đổi được mode', async () => {
+  await sandbox(async ({ home, keyFile, env, log }) => {
+    await runInit(baseFlags(keyFile), { home, log, env });
+    await runInit({ yes: true, mode: 'readwrite', 'no-test': true }, { home, log, env });
+    const cfg = readConfig(home, env);
+    assert.equal(cfg.clientEmail, 'test-sa@proj-test.iam.gserviceaccount.com');
+    assert.equal(cfg.mode, 'readwrite');
   });
 });
 
-test('init: settings.json hỏng thì THROW chứ không ghi đè', async () => {
-  await sandbox(async ({ home, keyFile, log }) => {
-    const settingsFile = join(home, '.claude', 'settings.json');
-    const broken = '{ "permissions": { "allow": [ ,,, }';
-    writeFileSync(settingsFile, broken);
-
-    await assert.rejects(
-      runInit({ ...baseFlags(keyFile), 'allow-bash': true }, { home, log, env: {} }),
-      /không phải JSON hợp lệ/,
+test('readConfig: rơi về vị trí CŨ khi chưa có cấu hình plugin', async () => {
+  await sandbox(async ({ home, env }) => {
+    writeFileSync(
+      join(home, '.claude', 'gdrive.json'),
+      JSON.stringify({ clientEmail: 'cu@x.com', privateKey: 'k', mode: 'readwrite' }),
     );
-    assert.equal(readFileSync(settingsFile, 'utf8'), broken, 'file người dùng phải còn nguyên');
+    const cfg = readConfig(home, env);
+    assert.equal(cfg.clientEmail, 'cu@x.com', 'người cài kiểu cũ không mất cấu hình');
   });
 });
 
-test('init chạy lại: idempotent, không nhân đôi rule', async () => {
-  await sandbox(async ({ home, keyFile, log }) => {
-    await runInit({ ...baseFlags(keyFile), 'allow-bash': true }, { home, log, env: {} });
-    await runInit({ ...baseFlags(keyFile), 'allow-bash': true }, { home, log, env: {} });
-    const settings = JSON.parse(readFileSync(join(home, '.claude', 'settings.json'), 'utf8'));
-    assert.equal(settings.permissions.allow.filter((r) => r.includes('gdrive')).length, 1);
+test('readConfig: cấu hình plugin THẮNG cấu hình cũ', async () => {
+  await sandbox(async ({ home, keyFile, env, log }) => {
+    writeFileSync(
+      join(home, '.claude', 'gdrive.json'),
+      JSON.stringify({ clientEmail: 'cu@x.com', privateKey: 'k' }),
+    );
+    await runInit(baseFlags(keyFile), { home, log, env });
+    assert.equal(readConfig(home, env).clientEmail, 'test-sa@proj-test.iam.gserviceaccount.com');
   });
 });
 
-test('init --no-skill: chỉ cài CLI', async () => {
-  await sandbox(async ({ home, keyFile, log }) => {
-    await runInit({ ...baseFlags(keyFile), 'no-skill': true }, { home, log, env: {} });
-    assert.ok(existsSync(cliPathFor(home)));
-    assert.equal(existsSync(join(home, '.claude', 'skills', 'gdrive', 'SKILL.md')), false);
-  });
-});
+test('uninstall: dọn sạch 4 chỗ của bản cài npx cũ, giữ rule người khác', async () => {
+  await sandbox(async ({ home, log }) => {
+    mkdirSync(join(home, '.claude', 'gdrive', 'bin'), { recursive: true });
+    mkdirSync(join(home, '.claude', 'skills', 'gdrive'), { recursive: true });
+    writeFileSync(join(home, '.claude', 'gdrive.json'), '{}');
+    writeFileSync(
+      join(home, '.claude', 'settings.json'),
+      JSON.stringify({
+        permissions: { allow: ['Bash(git status)', `Bash(node ${home}/.claude/gdrive/bin/cli.mjs:*)`] },
+        hooks: { Stop: [{ hooks: [{ type: 'command', command: 'cc-notify-telegram.mjs stop' }] }] },
+      }),
+    );
 
-test('uninstall: gỡ code + skill + rule, GIỮ config (còn private key)', async () => {
-  await sandbox(async ({ home, keyFile, log }) => {
-    await runInit({ ...baseFlags(keyFile), 'allow-bash': true }, { home, log, env: {} });
-    runUninstall({}, { home, log });
+    runUninstall({ purge: true }, { home, log });
 
     assert.equal(existsSync(join(home, '.claude', 'gdrive')), false);
     assert.equal(existsSync(join(home, '.claude', 'skills', 'gdrive')), false);
+    assert.equal(existsSync(join(home, '.claude', 'gdrive.json')), false);
 
     const settings = JSON.parse(readFileSync(join(home, '.claude', 'settings.json'), 'utf8'));
-    assert.equal('permissions' in settings, false, 'rule cuối cùng bị gỡ → dọn luôn key rỗng');
-
-    assert.ok(existsSync(join(home, '.claude', 'gdrive.json')), 'config giữ lại khi không --purge');
+    assert.deepEqual(settings.permissions.allow, ['Bash(git status)'], 'rule khác phải còn');
+    assert.ok(settings.hooks.Stop, 'hook của người khác phải còn nguyên');
   });
 });
 
-test('uninstall --purge: xoá cả config', async () => {
-  await sandbox(async ({ home, keyFile, log }) => {
-    await runInit(baseFlags(keyFile), { home, log, env: {} });
-    runUninstall({ purge: true }, { home, log });
-    assert.equal(existsSync(join(home, '.claude', 'gdrive.json')), false);
-  });
-});
-
-test('uninstall trên settings.json hỏng: không đụng vào file', async () => {
-  await sandbox(({ home, log }) => {
-    const settingsFile = join(home, '.claude', 'settings.json');
-    const broken = '{ hỏng';
-    writeFileSync(settingsFile, broken);
+test('uninstall: không --purge thì giữ config cũ (còn private key)', async () => {
+  await sandbox(async ({ home, log }) => {
+    writeFileSync(join(home, '.claude', 'gdrive.json'), '{}');
     runUninstall({}, { home, log });
-    assert.equal(readFileSync(settingsFile, 'utf8'), broken);
+    assert.ok(existsSync(join(home, '.claude', 'gdrive.json')));
+  });
+});
+
+test('uninstall: settings.json hỏng thì KHÔNG đụng vào file', async () => {
+  await sandbox(async ({ home, log }) => {
+    const file = join(home, '.claude', 'settings.json');
+    const broken = '{ hỏng';
+    writeFileSync(file, broken);
+    runUninstall({}, { home, log });
+    assert.equal(readFileSync(file, 'utf8'), broken);
+  });
+});
+
+test('uninstall: máy sạch thì không nổ', async () => {
+  await sandbox(async ({ home, log }) => {
+    assert.equal(runUninstall({}, { home, log }), true);
   });
 });

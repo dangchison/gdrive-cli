@@ -1,52 +1,66 @@
-// Gỡ cài đặt — nghịch đảo chính xác của init.
+// Dọn bản cài KIỂU CŨ (npx wizard, ≤ v0.1).
+//
+// Từ v0.2 việc gỡ plugin do Claude Code lo: `claude plugin uninstall gdrive@gdrive-cli`
+// (nó xoá luôn thư mục data). File này chỉ còn để dọn tàn dư của cách cài cũ — 4 chỗ rải
+// rác dưới ~/.claude mà cơ chế plugin không biết tới.
 
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-import { configPath, installDir, skillDir } from './config.mjs';
-import { removePermissions } from './settings.mjs';
+import { legacyConfigPath } from './config.mjs';
+
+const RULE_MARKER = 'gdrive/bin/cli.mjs';
 
 export function runUninstall(flags = {}, { home = homedir(), log = console.log } = {}) {
-  const dir = installDir(home);
-  if (existsSync(dir)) {
-    rmSync(dir, { recursive: true, force: true });
-    log(`✅ Đã xoá ${dir}`);
+  let found = false;
+
+  for (const [dir, label] of [
+    [join(home, '.claude', 'gdrive'), 'code'],
+    [join(home, '.claude', 'skills', 'gdrive'), 'skill'],
+  ]) {
+    if (existsSync(dir)) {
+      rmSync(dir, { recursive: true, force: true });
+      log(`✅ Đã xoá ${label}: ${dir}`);
+      found = true;
+    }
   }
 
-  const sdir = skillDir(home);
-  if (existsSync(sdir)) {
-    rmSync(sdir, { recursive: true, force: true });
-    log(`✅ Đã xoá skill ${sdir}`);
-  }
-
+  // Allow-rule bản cũ thêm vào settings.json — plugin không cần nữa.
   const settingsFile = join(home, '.claude', 'settings.json');
   if (existsSync(settingsFile)) {
     try {
       const settings = JSON.parse(readFileSync(settingsFile, 'utf8'));
-      const next = removePermissions(settings);
-      if (JSON.stringify(next) !== JSON.stringify(settings)) {
-        writeFileSync(settingsFile, JSON.stringify(next, null, 2) + '\n');
-        log('✅ Đã gỡ allow-rule khỏi settings.json');
+      const allow = settings.permissions?.allow;
+      if (Array.isArray(allow)) {
+        const kept = allow.filter((r) => !(typeof r === 'string' && r.includes(RULE_MARKER)));
+        if (kept.length !== allow.length) {
+          settings.permissions.allow = kept;
+          if (kept.length === 0) delete settings.permissions.allow;
+          if (Object.keys(settings.permissions).length === 0) delete settings.permissions;
+          writeFileSync(settingsFile, `${JSON.stringify(settings, null, 2)}\n`);
+          log('✅ Đã gỡ allow-rule khỏi settings.json');
+          found = true;
+        }
       }
     } catch {
-      // JSON hỏng: không đụng vào, chỉ báo. Ghi đè ở đây là phá settings của người dùng.
-      log(`⚠️  ${settingsFile} không parse được — allow-rule (nếu có) phải gỡ tay.`);
+      // JSON hỏng: KHÔNG đụng vào. Ghi đè ở đây là phá settings của người dùng.
+      log(`⚠️  ${settingsFile} không parse được — nếu còn allow-rule thì gỡ tay.`);
     }
   }
 
-  // Config chứa private key: chỉ xoá khi được yêu cầu tường minh, để cài lại không phải
-  // dán key lần nữa.
-  const cfgFile = configPath(home);
-  if (flags.purge) {
-    if (existsSync(cfgFile)) {
+  const cfgFile = legacyConfigPath(home);
+  if (existsSync(cfgFile)) {
+    if (flags.purge) {
       rmSync(cfgFile, { force: true });
-      log(`✅ Đã xoá config ${cfgFile}`);
+      log(`✅ Đã xoá config cũ ${cfgFile}`);
+    } else {
+      log(`ℹ️  Giữ lại ${cfgFile} (còn private key). Xoá luôn: thêm --purge`);
     }
-  } else if (existsSync(cfgFile)) {
-    log(`ℹ️  Giữ lại ${cfgFile} (còn private key). Xoá luôn: thêm cờ --purge`);
+    found = true;
   }
 
-  log('\nĐã gỡ. Mở session Claude Code mới để skill biến mất khỏi danh sách.\n');
+  if (!found) log('Không thấy tàn dư bản cài cũ nào.');
+  log('\nGỡ plugin: claude plugin uninstall gdrive@gdrive-cli\n');
   return true;
 }

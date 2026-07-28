@@ -1,0 +1,8 @@
+{
+  "name": "gdrive-cli",
+  "description": "Truy cập Google Drive/Sheets bằng service account cho Claude Code",
+  "owner": { "name": "dangchison" },
+  "plugins": [
+    { "name": "gdrive", "source": "./", "category": "productivity" }
+  ]
+}
