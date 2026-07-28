@@ -172,3 +172,31 @@ test('uninstall: máy sạch thì không nổ', async () => {
     assert.equal(runUninstall({}, { home, log }), true);
   });
 });
+
+// HỒI QUY 2026-07-28: tên thư mục data KHÔNG đoán được. MCP server nhận
+// CLAUDE_PLUGIN_DATA=…/gdrive-inline còn CLI tính ra …/gdrive-gdrive-cli → server không
+// thấy credential dù `status` xanh. Đây là ca đã xảy ra thật, không phải giả định.
+test('config: CLI ghi một tên thư mục, server đọc tên KHÁC — vẫn phải thấy nhau', async () => {
+  await sandbox(async ({ home, keyFile, env, log }) => {
+    // Claude Code đã tạo sẵn thư mục data với tên khác (như thực tế).
+    const serverDir = join(home, '.claude', 'plugins', 'data', 'gdrive-inline');
+    mkdirSync(serverDir, { recursive: true });
+
+    // CLI chạy NGOÀI Claude Code: không có CLAUDE_PLUGIN_DATA.
+    await runInit(baseFlags(keyFile), { home, log, env: {} });
+
+    // Server chạy TRONG Claude Code: env trỏ thư mục của nó.
+    const cfg = readConfig(home, { CLAUDE_PLUGIN_DATA: serverDir });
+    assert.ok(cfg, 'server PHẢI đọc được cấu hình mà CLI vừa ghi');
+    assert.equal(cfg.clientEmail, 'test-sa@proj-test.iam.gserviceaccount.com');
+  });
+});
+
+test('config: chiều ngược lại — server ghi, CLI đọc được', async () => {
+  await sandbox(async ({ home, keyFile, log }) => {
+    const serverDir = join(home, '.claude', 'plugins', 'data', 'gdrive-inline');
+    mkdirSync(serverDir, { recursive: true });
+    await runInit(baseFlags(keyFile), { home, log, env: { CLAUDE_PLUGIN_DATA: serverDir } });
+    assert.ok(readConfig(home, {}), 'CLI (không có env) PHẢI thấy cấu hình server ghi');
+  });
+});
