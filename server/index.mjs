@@ -226,11 +226,14 @@ process.stdin.on('data', (chunk) => {
   }
 });
 process.stdin.on('end', async () => {
+  process.exitCode = 0;
+  const forceExit = setTimeout(() => process.exit(0), SHUTDOWN_TIMEOUT_MS);
+  forceExit.unref();
   const drain = async () => {
     await Promise.allSettled([...inFlight]);
     await Promise.allSettled([...pendingWrites]);
   };
-  const timeout = new Promise((resolve) => setTimeout(resolve, SHUTDOWN_TIMEOUT_MS));
-  await Promise.race([drain(), timeout]);
-  process.exit(0);
+  await drain();
+  // Trên Windows, stdout pipe là kênh ghi bất đồng bộ; process.exit() có thể cắt
+  // phần libuv chưa đẩy sang đầu đọc, nhất là Node 18 với frame lớn.
 });
