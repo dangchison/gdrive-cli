@@ -51,8 +51,9 @@ gdrive uninstall [--purge]   # dọn bản cài npx CŨ (≤ v0.1)
 Mọi lệnh nhận **thẳng URL dán vào** — tự bóc file id và gid. `read` luôn in kèm danh sách
 tất cả các tab, nên đoán nhầm tab thì gọi lại được ngay, không cần lệnh phụ để dò.
 
-Mặc định cài ở chế độ **readonly**: `write` và `put` bị từ chối ngay tại chỗ, và token cũng
-chỉ được cấp scope `.readonly`. Bật ghi bằng `--mode readwrite`.
+Mặc định cài ở chế độ **readonly**: `write` và `put` bị từ chối ngay tại chỗ. Với service
+account, token được cấp scope `.readonly`; với ADC/gcloud, token giữ nguyên quyền đã được cấp
+cho tài khoản đó. Bật ghi bằng `--mode readwrite`.
 
 ## Vì sao zero dependency
 
@@ -93,10 +94,12 @@ Tìm theo thứ tự, dừng ở cái đầu tiên có:
 5. `GOOGLE_APPLICATION_CREDENTIALS` (đường dẫn file key)
 6. Config của plugin — `~/.claude/plugins/data/…/config.json` (chmod 600); rơi về
    `~/.claude/gdrive.json` nếu bạn từng cài kiểu cũ
-7. ADC của gcloud
-8. `gcloud auth print-access-token`
+7. ADC của gcloud — **opt-in**, chỉ chạy sau `gdrive init --adc`
+8. `gcloud auth print-access-token` — **opt-in**, chỉ chạy sau `gdrive init --adc`
 
 Env đứng trước file config là cố ý: CI không có `~/.claude` nhưng có secret trong env.
+ADC/gcloud bị tắt mặc định vì chúng chạy bằng danh tính cá nhân của người dùng, không phải
+service account riêng của plugin.
 
 > **Service account là một danh tính riêng, có email riêng.** Nó không thấy gì cho tới khi
 > bạn Share file/folder cho email đó — Viewer để đọc, Editor để ghi.
