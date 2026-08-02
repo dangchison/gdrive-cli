@@ -410,7 +410,51 @@ test('tools/call lỗi credential rồi đóng stdin ngay vẫn trả response v
 
 test('stdout backpressure: đóng stdin ngay vẫn flush xong frame lớn trước khi exit', async () => {
   const home = mkdtempSync(join(tmpdir(), 'gdrive-mcp-backpressure-'));
-  const child = spawn(process.execPath, [SERVER], {
+  // Preload quan sát THUẦN — bọc process.stdout.write để log ra stderr của child,
+  // không đổi hành vi ghi thật. Ủy quyền y nguyên cho hàm gốc. Không đụng stdin
+  // bằng listener (xem lý do ở comment ngay dưới).
+  const preload = join(home, 'diag-preload.mjs');
+  writeFileSync(
+    preload,
+    [
+      "const realWrite = process.stdout.write.bind(process.stdout);",
+      "let writeCount = 0;",
+      "process.stdout.write = function (chunk, encoding, cb) {",
+      "  let realCb = cb;",
+      "  let realEncoding = encoding;",
+      "  if (typeof realEncoding === 'function') {",
+      "    realCb = realEncoding;",
+      "    realEncoding = undefined;",
+      "  }",
+      "  const n = ++writeCount;",
+      "  const size = Buffer.byteLength(chunk, typeof realEncoding === 'string' ? realEncoding : 'utf8');",
+      "  const wrappedCb = (err) => {",
+      "    process.stderr.write(`[diag] write#${n} done err=${err ? (err.code ?? err.message) : 'none'}\\n`);",
+      "    if (realCb) realCb(err);",
+      "  };",
+      "  const ret = realEncoding === undefined",
+      "    ? realWrite(chunk, wrappedCb)",
+      "    : realWrite(chunk, realEncoding, wrappedCb);",
+      "  process.stderr.write(`[diag] write#${n} size=${size} ret=${ret}\\n`);",
+      "  return ret;",
+      "};",
+      "process.stdout.on('error', (e) => {",
+      "  process.stderr.write(`[diag] stdout error ${e ? (e.code ?? e.message) : 'none'}\\n`);",
+      "});",
+      "// KHÔNG gắn listener 'data'/'end' lên process.stdin: listener 'data' đầu tiên",
+      "// tự resume stdin sang flowing mode và có thể cướp mất chunk đầu trước khi",
+      "// server/index.mjs kịp gắn listener của nó (sau await import(...)) — đo kiểu đó",
+      "// sẽ tự tạo ra đúng triệu chứng đang điều tra. Đọc thụ động qua bytesRead khi thoát.",
+      "process.on('exit', (c) => {",
+      "  process.stderr.write(",
+      "    `[diag] exit code=${c} stdinBytesRead=${process.stdin.bytesRead} stdinReadableEnded=${process.stdin.readableEnded}\\n`,",
+      "  );",
+      "});",
+      '',
+    ].join('\n'),
+  );
+  const t0 = Date.now();
+  const child = spawn(process.execPath, ['--import', pathToFileURL(preload).href, SERVER], {
     env: { ...process.env, HOME: home, USERPROFILE: home },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -419,9 +463,19 @@ test('stdout backpressure: đóng stdin ngay vẫn flush xong frame lớn trư�
   child.stderr.on('data', (d) => {
     err += d;
   });
-  const close = new Promise((resolve) => child.on('close', (code) => resolve(code)));
+  let closeAt = null;
+  const close = new Promise((resolve) =>
+    child.on('close', (code) => {
+      closeAt = Date.now() - t0;
+      resolve(code);
+    }),
+  );
+  let stdoutEndAt = null;
   const stdoutEnd = new Promise((resolve, reject) => {
-    child.stdout.on('end', resolve);
+    child.stdout.on('end', () => {
+      stdoutEndAt = Date.now() - t0;
+      resolve();
+    });
     child.stdout.on('error', reject);
   });
   const timeout = new Promise((_, reject) => {
@@ -466,11 +520,28 @@ test('stdout backpressure: đóng stdin ngay vẫn flush xong frame lớn trư�
     });
 
     await new Promise((resolve) => setTimeout(resolve, 200));
+    const stdoutBefore = {
+      bytesRead: child.stdout.bytesRead,
+      readableLength: child.stdout.readableLength,
+      readableFlowing: child.stdout.readableFlowing,
+      readableEnded: child.stdout.readableEnded,
+      destroyed: child.stdout.destroyed,
+    };
+    let firstDataAt = null;
     child.stdout.on('data', (d) => {
+      if (firstDataAt === null) firstDataAt = Date.now() - t0;
       out += d;
     });
 
     const [code] = await Promise.race([Promise.all([close, stdoutEnd]), timeout]);
+
+    const stdoutAfter = {
+      bytesRead: child.stdout.bytesRead,
+      readableLength: child.stdout.readableLength,
+      readableFlowing: child.stdout.readableFlowing,
+      readableEnded: child.stdout.readableEnded,
+      destroyed: child.stdout.destroyed,
+    };
 
     // Parse khoan dung: một dòng bị cắt dở không được ném SyntaxError trần ra khỏi
     // test, vì như vậy sẽ mất toàn bộ diag — đúng thứ vòng chẩn đoán này cần giữ lại.
@@ -506,6 +577,13 @@ test('stdout backpressure: đóng stdin ngay vẫn flush xong frame lớn trư�
       `brokenLines=${JSON.stringify(brokenLines)}`,
       `out.head200=${JSON.stringify(out.slice(0, 200))}`,
       `out.tail200=${JSON.stringify(out.slice(-200))}`,
+      `stdout.before=${JSON.stringify(stdoutBefore)}`,
+      `stdout.after=${JSON.stringify(stdoutAfter)}`,
+      `child.exitCode=${child.exitCode}`,
+      `child.signalCode=${child.signalCode}`,
+      `t.firstData=${firstDataAt}`,
+      `t.stdoutEnd=${stdoutEndAt}`,
+      `t.close=${closeAt}`,
       `stderr=${err}`,
     ].join(' | ');
 
