@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 
@@ -420,6 +420,10 @@ test('stdout backpressure: đóng stdin ngay vẫn flush xong frame lớn trư�
     err += d;
   });
   const close = new Promise((resolve) => child.on('close', (code) => resolve(code)));
+  const stdoutEnd = new Promise((resolve, reject) => {
+    child.stdout.on('end', resolve);
+    child.stdout.on('error', reject);
+  });
   const timeout = new Promise((_, reject) => {
     setTimeout(() => {
       child.kill('SIGKILL');
@@ -444,7 +448,7 @@ test('stdout backpressure: đóng stdin ngay vẫn flush xong frame lớn trư�
       out += d;
     });
 
-    const code = await Promise.race([close, timeout]);
+    const [code] = await Promise.race([Promise.all([close, stdoutEnd]), timeout]);
     assert.equal(code, 0);
     const msgs = out
       .split('\n')
@@ -463,7 +467,7 @@ test('Node dưới 18.17: server báo stderr rồi thoát khác 0 trước hands
   const preload = join(home, 'mock-version.mjs');
   writeFileSync(preload, "Object.defineProperty(process, 'version', { value: 'v18.16.0' });\n");
   try {
-    const server = startServer({ home, nodeArgs: ['--import', preload] });
+    const server = startServer({ home, nodeArgs: ['--import', pathToFileURL(preload).href] });
     server.child.stdin.end();
     const closed = await server.close;
     assert.notEqual(closed.code, 0);
