@@ -431,9 +431,25 @@ test('stdout backpressure: đóng stdin ngay vẫn flush xong frame lớn trư�
     }, 10_000);
   });
 
+  // Chẩn đoán: đếm byte đã ghi vào stdin + bắt lỗi/ hoàn tất của stdin, để phân biệt
+  // "đứt phía input" (child không nhận/parse trọn request) với "đứt phía output"
+  // (child trả lời nhưng response không tới parent).
+  let stdinBytesWritten = 0;
+  let stdinEnded = false;
+  let stdinError = null;
+  child.stdin.on('error', (e) => {
+    stdinError = e;
+  });
+
   try {
-    child.stdin.write(`${JSON.stringify(INIT)}\n`);
-    child.stdin.end(`${JSON.stringify({
+    const initChunk = `${JSON.stringify(INIT)}\n`;
+    child.stdin.write(initChunk);
+    stdinBytesWritten += Buffer.byteLength(initChunk);
+
+    // Mồi phân biệt: frame nhỏ id:9 ngay sau frame lớn id:8, trong cùng lời gọi end().
+    // Server xử lý frame tuần tự theo dòng — nếu id:9 về mà id:8 không thì child đã
+    // đọc trọn dòng lớn (mất ở output); nếu cả hai đều mất thì mất ở input.
+    const bigFrame = `${JSON.stringify({
       jsonrpc: '2.0',
       id: 8,
       method: 'tools/call',
@@ -441,7 +457,13 @@ test('stdout backpressure: đóng stdin ngay vẫn flush xong frame lớn trư�
         name: 'gdrive_file_info',
         arguments: { url_or_id: `https://example.com/${'x'.repeat(4_000_000)}` },
       },
-    })}\n`);
+    })}\n`;
+    const pingFrame = `${JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'ping' })}\n`;
+    const endChunk = bigFrame + pingFrame;
+    stdinBytesWritten += Buffer.byteLength(endChunk);
+    child.stdin.end(endChunk, () => {
+      stdinEnded = true;
+    });
 
     await new Promise((resolve) => setTimeout(resolve, 200));
     child.stdout.on('data', (d) => {
@@ -449,14 +471,52 @@ test('stdout backpressure: đóng stdin ngay vẫn flush xong frame lớn trư�
     });
 
     const [code] = await Promise.race([Promise.all([close, stdoutEnd]), timeout]);
-    assert.equal(code, 0);
-    const msgs = out
-      .split('\n')
-      .filter((line) => line.trim())
-      .map((line) => JSON.parse(line));
+
+    // Parse khoan dung: một dòng bị cắt dở không được ném SyntaxError trần ra khỏi
+    // test, vì như vậy sẽ mất toàn bộ diag — đúng thứ vòng chẩn đoán này cần giữ lại.
+    const lines = out.split('\n').filter((line) => line.trim());
+    const msgs = [];
+    const brokenLines = [];
+    lines.forEach((line, index) => {
+      try {
+        msgs.push(JSON.parse(line));
+      } catch {
+        brokenLines.push({
+          index,
+          length: line.length,
+          tail120: line.slice(-120),
+        });
+      }
+    });
     const res = msgs.find((m) => m.id === 8);
-    assert.equal(res.result.isError, true);
-    assert.match(res.result.content[0].text, /Không tách được file id/);
+
+    const frameSummary = msgs.map((m) => ({
+      id: m.id,
+      method: m.method,
+      hasResult: Object.prototype.hasOwnProperty.call(m, 'result'),
+      hasError: Object.prototype.hasOwnProperty.call(m, 'error'),
+    }));
+    const diag = [
+      `exit code=${code}`,
+      `stdinBytesWritten=${stdinBytesWritten}`,
+      `stdinEnded=${stdinEnded}`,
+      `stdinError=${stdinError ? stdinError.message : 'none'}`,
+      `out.length=${out.length}`,
+      `frames=${JSON.stringify(frameSummary)}`,
+      `brokenLines=${JSON.stringify(brokenLines)}`,
+      `out.head200=${JSON.stringify(out.slice(0, 200))}`,
+      `out.tail200=${JSON.stringify(out.slice(-200))}`,
+      `stderr=${err}`,
+    ].join(' | ');
+
+    if (brokenLines.length > 0) {
+      assert.fail(`dòng trong out parse hỏng (frame bị cắt dở?). ${diag}`);
+    }
+
+    assert.ok(res, `thiếu frame id:8. ${diag}`);
+    assert.equal(code, 0, diag);
+    assert.equal(res.result.isError, true, diag);
+    assert.match(res.result.content[0].text, /Không tách được file id/, diag);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
