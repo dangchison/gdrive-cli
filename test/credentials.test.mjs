@@ -186,14 +186,15 @@ test('config: đọc được cả vị trí CŨ lẫn thư mục data plugin, b
 
     // Config plugin THẮNG, và source phải trỏ đúng file đang dùng.
     const dataDir = join(home, '.claude', 'plugins', 'data', 'gdrive-gdrive-cli');
+    const dataFile = join(dataDir, 'config.json');
     mkdirSync(dataDir, { recursive: true });
     writeFileSync(
-      join(dataDir, 'config.json'),
+      dataFile,
       JSON.stringify({ clientEmail: 'moi@x.com', privateKey: PEM, mode: 'readonly' }),
     );
     cred = resolveCredentials({ env: {}, home, run });
     assert.equal(cred.clientEmail, 'moi@x.com');
-    assert.match(cred.source, /plugins\/data\/gdrive-gdrive-cli\/config\.json$/);
+    assert.equal(cred.source, dataFile);
   });
 });
 
