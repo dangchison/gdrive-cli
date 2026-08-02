@@ -82,6 +82,12 @@ function writeLegacyConfig(home, cfg) {
   return file;
 }
 
+function writeBrokenConfig(file) {
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, '{ đây không phải JSON\n');
+  return file;
+}
+
 function startServer({ home = mkdtempSync(join(tmpdir(), 'gdrive-mcp-live-')), env = {}, nodeArgs = [] } = {}) {
   const child = spawn(process.execPath, [...nodeArgs, SERVER], {
     env: { ...process.env, HOME: home, USERPROFILE: home, ...env },
@@ -89,7 +95,35 @@ function startServer({ home = mkdtempSync(join(tmpdir(), 'gdrive-mcp-live-')), e
   });
   const msgs = [];
   let stderr = '';
-  let pendingReject = null;
+  const waiters = new Set();
+  const findFrame = (predicate) => {
+    try {
+      return { frame: msgs.find(predicate) };
+    } catch (err) {
+      return { err };
+    }
+  };
+  const settleWaiters = () => {
+    for (const waiter of [...waiters]) {
+      const { frame, err } = findFrame(waiter.predicate);
+      if (err) {
+        clearTimeout(waiter.timer);
+        waiters.delete(waiter);
+        waiter.reject(err);
+      } else if (frame) {
+        clearTimeout(waiter.timer);
+        waiters.delete(waiter);
+        waiter.resolve(frame);
+      }
+    }
+  };
+  const rejectWaiters = (err) => {
+    for (const waiter of [...waiters]) {
+      clearTimeout(waiter.timer);
+      waiter.reject(err);
+    }
+    waiters.clear();
+  };
   child.stderr.on('data', (d) => {
     stderr += d;
   });
@@ -98,28 +132,29 @@ function startServer({ home = mkdtempSync(join(tmpdir(), 'gdrive-mcp-live-')), e
       if (!line.trim()) continue;
       try {
         msgs.push(JSON.parse(line));
+        settleWaiters();
       } catch {
-        pendingReject?.(new Error(`stdout có dòng không phải JSON-RPC: ${JSON.stringify(line)}`));
+        rejectWaiters(new Error(`stdout có dòng không phải JSON-RPC: ${JSON.stringify(line)}`));
       }
     }
   });
   const close = new Promise((resolve) => child.on('close', (code) => resolve({ code, stderr })));
   const send = (frame) => child.stdin.write(`${JSON.stringify(frame)}\n`);
   const waitFor = (predicate) => new Promise((resolve, reject) => {
-    const started = Date.now();
-    pendingReject = reject;
-    const timer = setInterval(() => {
-      const found = msgs.find(predicate);
-      if (found) {
-        clearInterval(timer);
-        pendingReject = null;
-        resolve(found);
-      } else if (Date.now() - started > 5000) {
-        clearInterval(timer);
-        pendingReject = null;
+    const { frame, err } = findFrame(predicate);
+    if (err) return reject(err);
+    if (frame) return resolve(frame);
+
+    const waiter = {
+      predicate,
+      resolve,
+      reject,
+      timer: setTimeout(() => {
+        waiters.delete(waiter);
         reject(new Error(`timeout chờ frame; stderr=${stderr}; msgs=${JSON.stringify(msgs)}`));
-      }
-    }, 10);
+      }, 5000),
+    };
+    waiters.add(waiter);
   });
   return { child, home, msgs, send, waitFor, close };
 }
@@ -217,6 +252,66 @@ test('config đổi readonly → readwrite: ping bắn list_changed, tools/list 
   try {
     writeConfig(home, { mode: 'readonly' });
     const server = startServer({ home });
+    server.send(INIT);
+    await server.waitFor((m) => m.id === 0);
+    server.send({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+    const before = await server.waitFor((m) => m.id === 1);
+    assert.equal(before.result.tools.some((t) => t.name === 'gdrive_sheet_write'), false);
+
+    writeConfig(home, { mode: 'readwrite' });
+    server.send({ jsonrpc: '2.0', id: 2, method: 'ping' });
+    await server.waitFor((m) => m.method === 'notifications/tools/list_changed');
+    await server.waitFor((m) => m.id === 2);
+    server.send({ jsonrpc: '2.0', id: 3, method: 'tools/list' });
+    const after = await server.waitFor((m) => m.id === 3);
+    assert.equal(after.result.tools.some((t) => t.name === 'gdrive_sheet_write'), true);
+
+    server.child.stdin.end();
+    const closed = await server.close;
+    assert.equal(closed.code, 0);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('config đổi credential nhưng vẫn readonly: không bắn list_changed và tools/list vẫn không có tool ghi', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'gdrive-mcp-reload-credential-'));
+  try {
+    writeConfig(home, { mode: 'readonly', clientEmail: 'old-sa@proj.iam.gserviceaccount.com' });
+    const server = startServer({ home });
+    server.send(INIT);
+    await server.waitFor((m) => m.id === 0);
+    server.send({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+    const before = await server.waitFor((m) => m.id === 1);
+    assert.equal(before.result.tools.some((t) => t.name === 'gdrive_sheet_write'), false);
+
+    writeConfig(home, { mode: 'readonly', clientEmail: 'rotated-sa@proj.iam.gserviceaccount.com' });
+    server.send({ jsonrpc: '2.0', id: 2, method: 'ping' });
+    await server.waitFor((m) => m.id === 2);
+    assert.equal(
+      server.msgs.some((m) => m.method === 'notifications/tools/list_changed'),
+      false,
+    );
+
+    server.send({ jsonrpc: '2.0', id: 3, method: 'tools/list' });
+    const after = await server.waitFor((m) => m.id === 3);
+    assert.equal(after.result.tools.some((t) => t.name === 'gdrive_sheet_write'), false);
+
+    server.child.stdin.end();
+    const closed = await server.close;
+    assert.equal(closed.code, 0);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('config hỏng ưu tiên cao không chặn reload của config hợp lệ thấp hơn', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'gdrive-mcp-reload-broken-priority-'));
+  const higherDir = join(home, '.claude', 'plugins', 'data', 'gdrive-inline');
+  try {
+    writeBrokenConfig(join(higherDir, 'config.json'));
+    writeConfig(home, { mode: 'readonly' });
+    const server = startServer({ home, env: { CLAUDE_PLUGIN_DATA: higherDir } });
     server.send(INIT);
     await server.waitFor((m) => m.id === 0);
     server.send({ jsonrpc: '2.0', id: 1, method: 'tools/list' });

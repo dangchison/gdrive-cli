@@ -70,44 +70,35 @@ const notifyToolsChanged = () => send({ jsonrpc: '2.0', method: 'notifications/t
 // Không đụng credential lúc khởi động: server phải spawn được kể cả khi người dùng
 // chưa cấu hình, để `tools/list` vẫn chạy và lỗi hiện ra lúc gọi tool (kèm hướng dẫn),
 // thay vì server chết câm ngay từ session start.
-function fingerprintFor(path) {
-  if (!path) return null;
-  try {
-    const st = statSync(path);
-    // Rẻ và đủ cho đường ghi của plugin: writeConfig luôn ghi lại file nên mtime đổi.
-    // Không bắt ca nội dung đổi mà mtimeMs và size đều bị giữ nguyên — chấp nhận.
-    return `${path}:${st.mtimeMs}:${st.size}`;
-  } catch (err) {
-    if (err?.code === 'ENOENT') return null;
-    console.error('[gdrive-mcp] không stat được config:', err);
-    return null;
-  }
-}
-
-function currentConfigPath() {
+function fingerprintForConfigs() {
+  const parts = [];
   for (const path of configSearchPaths(homedir(), process.env)) {
-    if (existsSync(path)) return path;
+    if (!existsSync(path)) continue;
+    try {
+      const st = statSync(path);
+      // Rẻ và đủ cho đường ghi của plugin: writeConfig luôn ghi lại file nên mtime đổi.
+      // Không bắt ca nội dung đổi mà mtimeMs và size đều bị giữ nguyên — chấp nhận.
+      parts.push(`${path}:${st.mtimeMs}:${st.size}`);
+    } catch (err) {
+      if (err?.code === 'ENOENT') continue;
+      console.error('[gdrive-mcp] không stat được config:', err);
+    }
   }
-  return null;
-}
-
-function currentConfigFingerprint() {
-  const path = currentConfigPath();
-  return { path, fingerprint: fingerprintFor(path) };
+  return parts.length ? parts.join('|') : null;
 }
 
 function buildState() {
   const cfgWithSource = readConfigWithSource();
   const mode = cfgWithSource?.config?.mode === 'readwrite' ? 'readwrite' : 'readonly';
-  const current = currentConfigFingerprint();
+  const fingerprint = fingerprintForConfigs();
   const next = {
     mode,
     client: null,
     tools: [],
     byName: new Map(),
     listPayload: { tools: [] },
-    sourcePath: current.path,
-    fingerprint: current.fingerprint,
+    sourcePath: cfgWithSource?.path ?? null,
+    fingerprint,
   };
   const getClient = () => {
     if (!next.client) next.client = createClient({ mode: next.mode, retries: 2 });
@@ -124,15 +115,12 @@ function buildState() {
 let state = buildState();
 
 function refreshStateIfChanged() {
-  const current = currentConfigFingerprint();
-  if (current.path === state.sourcePath && current.fingerprint === state.fingerprint) return false;
+  const fingerprint = fingerprintForConfigs();
+  if (fingerprint === state.fingerprint) return false;
   const next = buildState();
-  const changed =
-    next.mode !== state.mode ||
-    next.sourcePath !== state.sourcePath ||
-    next.fingerprint !== state.fingerprint;
-  if (changed) state = next;
-  return changed;
+  const toolsChanged = next.mode !== state.mode;
+  state = next;
+  return toolsChanged;
 }
 
 // ── Xử lý message ───────────────────────────────────────────────────────────
