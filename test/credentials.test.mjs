@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
+import { generateKeyPairSync } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
+import { createClient } from '../src/client.mjs';
 import { adcPath, CredentialError, resolveCredentials, scopesForMode } from '../src/credentials.mjs';
+import { runStatus } from '../src/status.mjs';
 
 const PEM = '-----BEGIN PRIVATE KEY-----\\nMIIabc\\n-----END PRIVATE KEY-----\\n';
 const PEM_OPEN = '-----BEGIN PRIVATE KEY-----\nMIIabc\n-----END PRIVATE KEY-----';
@@ -16,11 +19,18 @@ function sandbox(fn) {
   const noGcloud = () => {
     throw new Error('gcloud không có');
   };
+  let result;
   try {
-    return fn({ home, run: noGcloud });
-  } finally {
+    result = fn({ home, run: noGcloud });
+  } catch (err) {
     rmSync(home, { recursive: true, force: true });
+    throw err;
   }
+  if (result && typeof result.then === 'function') {
+    return result.finally(() => rmSync(home, { recursive: true, force: true }));
+  }
+  rmSync(home, { recursive: true, force: true });
+  return result;
 }
 
 function sa(overrides = {}) {
@@ -31,6 +41,26 @@ function sa(overrides = {}) {
     project_id: 'proj',
     ...overrides,
   });
+}
+
+function writeAdc(home, overrides = {}) {
+  const dir = join(home, '.config', 'gcloud');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, 'application_default_credentials.json'),
+    JSON.stringify({
+      type: 'authorized_user',
+      client_id: 'cid',
+      client_secret: 'cs',
+      refresh_token: 'rt',
+      quota_project_id: 'qp',
+      ...overrides,
+    }),
+  );
+}
+
+function writeLegacyConfig(home, cfg) {
+  writeFileSync(join(home, '.claude', 'gdrive.json'), JSON.stringify(cfg));
 }
 
 test('explicit đứng trước tất cả', () => {
@@ -123,6 +153,26 @@ test('GOOGLE_APPLICATION_CREDENTIALS trỏ tới file key', () => {
   });
 });
 
+test('GOOGLE_APPLICATION_CREDENTIALS trỏ tới authorized_user vẫn là chỉ định tường minh', () => {
+  sandbox(({ home, run }) => {
+    const file = join(home, 'adc.json');
+    writeFileSync(
+      file,
+      JSON.stringify({
+        type: 'authorized_user',
+        client_id: 'cid',
+        client_secret: 'cs',
+        refresh_token: 'rt',
+        quota_project_id: 'qp',
+      }),
+    );
+    const cred = resolveCredentials({ env: { GOOGLE_APPLICATION_CREDENTIALS: file }, home, run });
+    assert.equal(cred.type, 'authorized_user');
+    assert.equal(cred.source, 'GOOGLE_APPLICATION_CREDENTIALS');
+    assert.equal(cred.quotaProjectId, 'qp');
+  });
+});
+
 test('config: đọc được cả vị trí CŨ lẫn thư mục data plugin, báo ĐÚNG nguồn', () => {
   sandbox(({ home, run }) => {
     // Vị trí cũ (bản cài npx) — người đã cài kiểu cũ không được mất cấu hình.
@@ -164,21 +214,40 @@ test('env thắng config — CI không có ~/.claude nhưng máy dev thì có c�
 
 test('ADC authorized_user', () => {
   sandbox(({ home, run }) => {
-    const dir = join(home, '.config', 'gcloud');
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(
-      join(dir, 'application_default_credentials.json'),
-      JSON.stringify({
-        type: 'authorized_user',
-        client_id: 'cid',
-        client_secret: 'cs',
-        refresh_token: 'rt',
-        quota_project_id: 'qp',
-      }),
-    );
+    writeAdc(home);
+    writeLegacyConfig(home, { useAdc: true });
     const cred = resolveCredentials({ env: {}, home, run });
     assert.equal(cred.type, 'authorized_user');
     assert.equal(cred.quotaProjectId, 'qp');
+  });
+});
+
+test('ADC authorized_user mặc định bị tắt và lỗi chỉ cách bật lại', () => {
+  sandbox(({ home, run }) => {
+    writeAdc(home);
+    assert.throws(() => resolveCredentials({ env: {}, home, run }), (err) => {
+      assert.ok(err instanceof CredentialError);
+      assert.match(err.message, /init --adc/);
+      assert.match(err.message, /danh tính cá nhân/);
+      return true;
+    });
+  });
+});
+
+test('allowAdc bật được ADC mà không cần config', () => {
+  sandbox(({ home, run }) => {
+    writeAdc(home);
+    const cred = resolveCredentials({ env: {}, home, run, allowAdc: true });
+    assert.equal(cred.type, 'authorized_user');
+    assert.equal(cred.quotaProjectId, 'qp');
+  });
+});
+
+test('createClient forward allowAdc xuống resolveCredentials', () => {
+  sandbox(({ home }) => {
+    writeAdc(home);
+    const client = createClient({ env: {}, home, allowAdc: true });
+    assert.equal(client.credentials.type, 'authorized_user');
   });
 });
 
@@ -191,6 +260,7 @@ test('CLOUDSDK_CONFIG đổi vị trí file ADC', () => {
 
 test('gcloud print-access-token là cứu cánh cuối', () => {
   sandbox(({ home }) => {
+    writeLegacyConfig(home, { useAdc: true });
     const cred = resolveCredentials({
       env: {},
       home,
@@ -198,6 +268,21 @@ test('gcloud print-access-token là cứu cánh cuối', () => {
     });
     assert.equal(cred.type, 'access_token');
     assert.equal(cred.token, 'ya29.fake-token');
+  });
+});
+
+test('gcloud print-access-token mặc định bị tắt', () => {
+  sandbox(({ home }) => {
+    let calls = 0;
+    const run = () => {
+      calls += 1;
+      return 'ya29.fake-token\n';
+    };
+    assert.throws(
+      () => resolveCredentials({ env: {}, home, run }),
+      CredentialError,
+    );
+    assert.equal(calls, 0);
   });
 });
 
@@ -209,6 +294,7 @@ test('không có gì → lỗi liệt kê đủ cách khắc phục', () => {
       assert.match(err.message, /GOOGLE_SERVICE_ACCOUNT_JSON/);
       assert.match(err.message, /DRIVE_SERVICE_ACCOUNT_EMAIL/);
       assert.match(err.message, /gcloud auth application-default login/);
+      assert.match(err.message, /init --adc/);
       return true;
     });
   });
@@ -224,4 +310,70 @@ test('scope theo mode', () => {
     'https://www.googleapis.com/auth/spreadsheets',
   ]);
   assert.deepEqual(scopesForMode(undefined), scopesForMode('readonly'), 'mặc định là readonly');
+});
+
+test('status cảnh báo scope khi credential không phải service account', async () => {
+  await sandbox(async ({ home }) => {
+    writeAdc(home);
+    writeLegacyConfig(home, { useAdc: true, mode: 'readonly' });
+    const logs = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      if (String(url).includes('/token')) {
+        return new Response(JSON.stringify({ access_token: 'ya29.fake', expires_in: 3600 }), { status: 200 });
+      }
+      return new Response(
+        JSON.stringify({
+          user: { emailAddress: 'user@example.com' },
+          storageQuota: { limit: '1' },
+        }),
+        { status: 200 },
+      );
+    };
+    try {
+      await runStatus({ home, env: {}, log: (line) => logs.push(line) });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    const output = logs.join('\n');
+    assert.match(output, /readonly KHÔNG giới hạn scope thật/);
+    assert.match(output, /tool ghi bị ẩn/);
+  });
+});
+
+test('status không cảnh báo scope khi credential là service account', async () => {
+  await sandbox(async ({ home }) => {
+    const { privateKey } = generateKeyPairSync('rsa', {
+      modulusLength: 2048,
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+    });
+    writeLegacyConfig(home, {
+      clientEmail: 'sa@proj.iam.gserviceaccount.com',
+      privateKey,
+      mode: 'readonly',
+    });
+    const logs = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      if (String(url).includes('/token')) {
+        return new Response(JSON.stringify({ access_token: 'ya29.fake', expires_in: 3600 }), { status: 200 });
+      }
+      return new Response(
+        JSON.stringify({
+          user: { emailAddress: 'sa@proj.iam.gserviceaccount.com' },
+          storageQuota: { limit: '0' },
+        }),
+        { status: 200 },
+      );
+    };
+    try {
+      await runStatus({ home, env: {}, log: (line) => logs.push(line) });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    const output = logs.join('\n');
+    assert.doesNotMatch(output, /readonly KHÔNG giới hạn scope thật/);
+    assert.match(output, /Scope: https:\/\/www.googleapis.com\/auth\/drive\.readonly/);
+  });
 });

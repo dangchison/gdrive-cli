@@ -71,7 +71,12 @@ export async function runStatus({ home = homedir(), log = console.log, env = pro
       const info = await about(client);
       const email = info.user?.emailAddress ?? '(không rõ)';
       log(`${OK} Token OK — danh tính: ${email}`);
-      log(`     Scope: ${scopesForMode(mode).join(' ')}`);
+      if (credentials.type === 'service_account') {
+        log(`     Scope: ${scopesForMode(mode).join(' ')}`);
+      } else {
+        log(`${WARN} Với ADC/token gcloud, readonly KHÔNG giới hạn scope thật — token mang đủ quyền đã được cấp cho tài khoản đó; giới hạn duy nhất là các tool ghi bị ẩn.`);
+        log(`     Scope theo mode: ${scopesForMode(mode).join(' ')} (không thu hẹp token ADC/gcloud)`);
+      }
       log(`\n     Share file/thư mục cho email này thì mới đọc/ghi được:\n       ${email}`);
       if (Number(info.storageQuota?.limit ?? 0) === 0 && credentials.type === 'service_account') {
         log(`\n${WARN} Dung lượng My Drive = 0 (bình thường với service account).`);

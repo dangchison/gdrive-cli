@@ -9,17 +9,19 @@ import { request } from './http.mjs';
  * @param {object} [opts.credentials]  {clientEmail, privateKey} hoặc {accessToken} — bỏ qua thì tự dò
  * @param {'readonly'|'readwrite'} [opts.mode]
  * @param {number} [opts.retries]  số lần thử lại cho lỗi tạm thời (CLI dùng 2, thư viện dùng 0)
+ * @param {boolean} [opts.allowAdc]  cho phép fallback ADC/gcloud khi dùng như thư viện
  */
 export function createClient({
   credentials = null,
   mode = 'readwrite',
   retries = 0,
+  allowAdc = false,
   env = process.env,
   home = undefined,
   fetchImpl = fetch,
   now = Date.now,
 } = {}) {
-  const resolved = resolveCredentials({ explicit: credentials, env, ...(home ? { home } : {}) });
+  const resolved = resolveCredentials({ explicit: credentials, env, allowAdc, ...(home ? { home } : {}) });
   const scopes = scopesForMode(mode);
   const tokenSource = createTokenSource(resolved, { fetchImpl, now });
 

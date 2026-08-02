@@ -116,6 +116,7 @@ export function resolveCredentials({
   env = process.env,
   home = homedir(),
   run = execFileSync,
+  allowAdc = false,
 } = {}) {
   // 1. Truyền thẳng vào (test, hoặc caller đã có sẵn).
   if (explicit) {
@@ -188,22 +189,30 @@ export function resolveCredentials({
 
   // 7. ADC của gcloud.
   const adc = adcPath(env, home);
-  if (cfg?.useAdc !== false && existsSync(adc)) {
+  const useAdc = allowAdc === true || cfg?.useAdc === true;
+  const hasAdc = existsSync(adc);
+  if (useAdc && hasAdc) {
     const obj = readJsonFile(adc, 'ADC');
     const cred = fromAuthorizedUserObject(obj, 'ADC') ?? fromServiceAccountObject(obj, 'ADC');
     if (cred) return cred;
   }
 
   // 8. Cứu cánh cuối: nhờ gcloud in token ra. Chậm (~700ms) nên để cuối cùng.
-  try {
-    const token = String(run('gcloud', ['auth', 'print-access-token'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    })).trim();
-    if (token) return { type: 'access_token', token, source: 'gcloud print-access-token' };
-  } catch {
-    /* gcloud không có hoặc chưa login — rơi xuống lỗi bên dưới */
+  if (useAdc) {
+    try {
+      const token = String(run('gcloud', ['auth', 'print-access-token'], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      })).trim();
+      if (token) return { type: 'access_token', token, source: 'gcloud print-access-token' };
+    } catch {
+      /* gcloud không có hoặc chưa login — rơi xuống lỗi bên dưới */
+    }
   }
+
+  const disabledAdcNote = hasAdc && !useAdc
+    ? '\n\nĐã phát hiện ADC của gcloud nhưng KHÔNG dùng. ADC/gcloud thường chạy bằng danh tính cá nhân của bạn, không phải service account; muốn bật nguồn này thì chạy `gdrive init --adc`.'
+    : '';
 
   throw new CredentialError(
     'Không tìm thấy credential Google. Chọn một trong các cách sau:\n' +
@@ -214,6 +223,8 @@ export function resolveCredentials({
       '  • Hoặc file:    GOOGLE_APPLICATION_CREDENTIALS=/đường/dẫn/key.json\n' +
       '  • Hoặc gcloud:  gcloud auth application-default login \\\n' +
       '                    --scopes=https://www.googleapis.com/auth/drive,' +
-      'https://www.googleapis.com/auth/spreadsheets,https://www.googleapis.com/auth/cloud-platform',
+      'https://www.googleapis.com/auth/spreadsheets,https://www.googleapis.com/auth/cloud-platform\n' +
+      '                    rồi chạy `gdrive init --adc` để bật nguồn này (ADC/gcloud dùng danh tính cá nhân, không phải service account)' +
+      disabledAdcNote,
   );
 }
